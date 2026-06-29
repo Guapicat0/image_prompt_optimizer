@@ -483,24 +483,39 @@ public static class ApiClient
         catch (Exception ex) { multipartError = ex; }
 
         ArrayList imageUrls = new ArrayList();
+        ArrayList imageUrlObjects = new ArrayList();
         foreach (var img in images)
         {
             string mime = img.ContainsKey("mime") ? Convert.ToString(img["mime"]) : "application/octet-stream";
             string imageBase64 = Convert.ToString(img["base64"]);
-            imageUrls.Add("data:" + mime + ";base64," + imageBase64);
+            string dataUrl = "data:" + mime + ";base64," + imageBase64;
+            imageUrls.Add(dataUrl);
+            imageUrlObjects.Add(new Dictionary<string, object> { { "image_url", dataUrl } });
         }
-        var body = new Dictionary<string, object> {
+        var failures = new List<string>();
+        var bodies = new List<Dictionary<string, object>>();
+        bodies.Add(ImageEditBody(model, prompt, size, quality, "images", imageUrlObjects));
+        bodies.Add(ImageEditBody(model, prompt, size, quality, "image_url", imageUrls[0]));
+        bodies.Add(ImageEditBody(model, prompt, size, quality, "image", imageUrls.Count == 1 ? imageUrls[0] : imageUrls));
+        foreach (var body in bodies)
+        {
+            try { return await InvokeJson("POST", baseUrl, apiKey, "/v1/images/edits", body, 300); }
+            catch (Exception json) { failures.Add(json.Message); }
+        }
+        throw new Exception("Multipart failed: " + multipartError.Message + Environment.NewLine + "JSON failed: " + String.Join(Environment.NewLine + "---" + Environment.NewLine, failures.ToArray()));
+    }
+
+    private static Dictionary<string, object> ImageEditBody(string model, string prompt, string size, string quality, string imageKey, object imageValue)
+    {
+        return new Dictionary<string, object> {
             { "model", model },
             { "prompt", prompt },
-            { "image", imageUrls.Count == 1 ? imageUrls[0] : imageUrls },
+            { imageKey, imageValue },
             { "size", size },
             { "quality", quality },
             { "response_format", "b64_json" }
         };
-        try { return await InvokeJson("POST", baseUrl, apiKey, "/v1/images/edits", body, 300); }
-        catch (Exception json) { throw new Exception("Multipart 失败：" + multipartError.Message + Environment.NewLine + "JSON 失败：" + json.Message); }
     }
-
     public static async Task<Dictionary<string, object>> InvokeJson(string method, string baseUrl, string apiKey, string path, object body, int timeoutSeconds)
     {
         using (HttpClient client = NewClient(apiKey, timeoutSeconds))
