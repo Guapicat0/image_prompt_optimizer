@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>图像优化工作台</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">图像优化工作台</div>
+      <button class="nav active" data-view="analysis">分析提示词</button>
+      <button class="nav" data-view="edit">绘图编辑</button>
+      <button class="nav" data-view="settings">模型服务</button>
+      <div class="historyHead">
+        <span>历史记录</span>
+        <button id="clearHistory">清空</button>
+      </div>
+      <div id="historyList" class="history"></div>
+    </aside>
+
+    <main class="main">
+      <section id="view-settings" class="view">
+        <header class="viewTitle">
+          <h1>模型服务</h1>
+          <p>填写中转 URL 和 API Key，测试联通后会读取可用模型。</p>
+        </header>
+        <div class="settingsGrid">
+          <label>绘图服务 URL<input id="imageBaseUrl" placeholder="https://www.cctq.ai/v1"></label>
+          <label>绘图 API Key<input id="imageApiKey" type="password"></label>
+          <button id="testImage">测试绘图服务</button>
+          <div id="imagePing" class="ping">未测试</div>
+          <label>对话服务 URL<input id="chatBaseUrl" placeholder="https://www.cctq.ai/v1"></label>
+          <label>对话 API Key<input id="chatApiKey" type="password"></label>
+          <button id="testChat">测试对话服务</button>
+          <div id="chatPing" class="ping">未测试</div>
+        </div>
+      </section>
+
+      <section id="view-analysis" class="view active">
+        <header class="viewTitle">
+          <h1>分析提示词</h1>
+          <p>拖入或选择一张图，用对话模型分析不足并生成绘图编辑提示词。</p>
+        </header>
+        <div class="toolbar">
+          <label>对话模型<select id="chatModel"></select></label>
+          <button id="pickAnalysisImage">选择图像</button>
+          <button id="analyzeBtn" class="primary">开始分析</button>
+        </div>
+        <div id="analysisDrop" class="drop">拖拽 JPG / PNG / RAW 到这里，或点击“选择图像”</div>
+        <div id="analysisFiles" class="chips"></div>
+        <div id="analysisMeta" class="meta"></div>
+        <div class="analysisGrid">
+          <label>图像不足与优化思路<textarea id="issues" readonly></textarea></label>
+          <label>给绘图模型的编辑提示词<textarea id="prompt"></textarea></label>
+          <label class="wide">负面提示词<textarea id="negative"></textarea></label>
+        </div>
+      </section>
+
+      <section id="view-edit" class="view chatView">
+        <header class="viewTitle">
+          <h1>绘图编辑</h1>
+          <p>像 ChatGPT 一样上传最多三张参考图，输入绘图提示词并生成结果。</p>
+        </header>
+        <div id="chatMessages" class="chatMessages"></div>
+        <div class="composer">
+          <div id="editFiles" class="thumbs"></div>
+          <textarea id="editPrompt" placeholder="描述你想如何编辑图像..."></textarea>
+          <div class="composerBar">
+            <button id="pickEditImages">+ 添加图像</button>
+            <button id="useDefault">使用第 3 步默认提示词</button>
+            <select id="imageModel"></select>
+            <select id="size">
+              <option value="auto">auto</option>
+              <option value="1024x1024">1024x1024</option>
+              <option value="1536x1024">1536x1024</option>
+              <option value="1024x1536">1024x1536</option>
+            </select>
+            <select id="quality">
+              <option value="auto">auto</option>
+              <option value="high">high</option>
+              <option value="medium">medium</option>
+              <option value="low">low</option>
+            </select>
+            <button id="sendEdit" class="primary round">生成</button>
+          </div>
+          <div id="editDrop" class="drop small">拖拽最多 3 张图到这里</div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>

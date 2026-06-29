@@ -1,0 +1,20 @@
+# Dependency folders
+frontend/node_modules/
+
+# Local WebView2 user data/cache
+ImagePromptOptimizer.exe.WebView2/
+
+# Expanded NuGet package cache; keep the original nupkg instead.
+packages/webview2/
+
+# Build scratch files
+installer/build/
+dist/
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local app/runtime data
+*.log

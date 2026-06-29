@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>图像优化提示词生成器</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="topbar">
+      <div>
+        <h1>图像优化提示词生成器</h1>
+        <p>验证模型服务，选择本地图像，用对话模型生成编辑提示词，再调用绘图模型优化图像。</p>
+      </div>
+      <div class="topActions">
+        <button id="historyBtn" class="ghost" type="button">历史记录</button>
+        <button id="clearBtn" class="ghost" type="button">清空当前</button>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>1. 接入模型服务</h2>
+        <div class="two">
+          <label>绘图服务 URL
+            <input id="imageBaseUrl" placeholder="https://www.cctq.ai/v1">
+          </label>
+          <label>绘图 API Key
+            <input id="imageApiKey" type="password" autocomplete="off" placeholder="sk-...">
+          </label>
+        </div>
+        <div class="row">
+          <button id="testImageService" type="button">测试绘图服务</button>
+          <span id="imagePing" class="pingText">未测试</span>
+        </div>
+
+        <div class="two">
+          <label>对话服务 URL
+            <input id="chatBaseUrl" placeholder="https://www.cctq.ai/v1">
+          </label>
+          <label>对话 API Key
+            <input id="chatApiKey" type="password" autocomplete="off" placeholder="sk-...">
+          </label>
+        </div>
+        <div class="row">
+          <button id="testChatService" type="button">测试对话服务</button>
+          <span id="chatPing" class="pingText">未测试</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>2. 选择图像</h2>
+        <label class="drop" for="fileInput">
+          <input id="fileInput" type="file" accept=".jpg,.jpeg,.png,.raw,.dng,.cr2,.nef,.arw,.rw2,.orf,.raf,image/jpeg,image/png,image/x-adobe-dng">
+          <span>点击选择 JPG / PNG / RAW 图像</span>
+          <small id="fileMeta">尚未选择文件</small>
+        </label>
+        <div class="previewWrap">
+          <img id="preview" alt="图像预览">
+          <div id="rawNotice">RAW 文件通常无法在浏览器中预览，但仍会发送给兼容接口。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel workflow">
+      <h2>3. 分析并生成提示词</h2>
+      <div class="settings">
+        <label>对话模型
+          <select id="chatModel"></select>
+        </label>
+        <button id="analyzeBtn" type="button">开始分析</button>
+      </div>
+      <div id="analysisMeta" class="metaLine"></div>
+      <div id="analysisError" class="errorBox"></div>
+      <div class="results">
+        <label>图像不足与优化思路
+          <textarea id="issues" rows="8" readonly></textarea>
+        </label>
+        <label>给绘图模型的编辑提示词
+          <textarea id="prompt" rows="8"></textarea>
+        </label>
+        <label>负面提示词
+          <textarea id="negative" rows="4"></textarea>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel workflow">
+      <h2>4. 调用绘图模型编辑</h2>
+      <div class="settings">
+        <label>绘图模型
+          <select id="imageModel"></select>
+        </label>
+        <label>输出尺寸
+          <select id="size">
+            <option value="auto">auto</option>
+            <option value="1024x1024">1024x1024</option>
+            <option value="1536x1024">1536x1024</option>
+            <option value="1024x1536">1024x1536</option>
+          </select>
+        </label>
+        <label>质量
+          <select id="quality">
+            <option value="auto">auto</option>
+            <option value="high">high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+          </select>
+        </label>
+      </div>
+      <div class="promptHeader">
+        <label>绘图提示词
+          <textarea id="editPrompt" rows="7"></textarea>
+        </label>
+        <button id="useDefaultPrompt" class="ghost" type="button">使用第 3 步默认提示词</button>
+      </div>
+      <div class="actions">
+        <button id="editBtn" type="button">生成优化图像</button>
+      </div>
+      <div id="editMeta" class="metaLine"></div>
+      <div id="editError" class="errorBox"></div>
+      <div class="output">
+        <img id="resultImage" alt="优化结果">
+        <a id="downloadLink" download="optimized-image.png">下载优化图像</a>
+      </div>
+    </section>
+
+    <section id="historyPanel" class="panel workflow historyPanel">
+      <div class="sectionHeader">
+        <div>
+          <h2>历史记录</h2>
+          <p id="historySummary" class="historySummary">按时间倒序显示，历史保存在本机浏览器 IndexedDB。</p>
+        </div>
+        <button id="clearHistoryBtn" class="ghost danger" type="button">清空历史</button>
+      </div>
+      <div id="historyList" class="historyList"></div>
+      <button id="loadMoreHistoryBtn" class="ghost loadMore" type="button">加载更多</button>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>
