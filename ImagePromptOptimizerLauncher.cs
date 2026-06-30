@@ -249,14 +249,13 @@ public sealed class MainForm : Form
             string dataUrl = ExtractImageDataUrl(response);
             string savedPath = await SaveImageToLocal(dataUrl);
             sw.Stop();
-            history.Add(new HistoryItem("调用绘图模型编辑", "成功", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, "", "", "", "", savedPath, dataUrl, HistoryImagePayloads(images)));
             await Send("editResult", new { prompt = prompt, dataUrl = dataUrl, path = savedPath, history = history.LoadLatest(200) });
         }
         catch (Exception ex)
         {
             sw.Stop();
             failure = ex;
-            history.Add(new HistoryItem("调用绘图模型编辑", "失败", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, Friendly(ex), "", "", "", "", "", HistoryImagePayloads(images)));
+
         }
         if (failure != null)
         {

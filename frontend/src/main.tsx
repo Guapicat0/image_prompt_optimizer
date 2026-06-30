@@ -75,6 +75,12 @@ type Settings = {
   ChatModels: string[];
 };
 
+const EDIT_SESSIONS_KEY = "image-prompt-optimizer-edit-sessions";
+
+const loadEditSessions = (): EditSession[] => {
+  try { return JSON.parse(localStorage.getItem(EDIT_SESSIONS_KEY) || "[]"); } catch { return []; }
+};
+
 const defaultSettings: Settings = {
   ImageBaseUrl: "https://www.cctq.ai/v1",
   ImageApiKey: "",
@@ -141,7 +147,7 @@ function App() {
   const [view, setView] = useState<"analysis" | "edit" | "settings">("settings");
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [editSessions, setEditSessions] = useState<EditSession[]>([]);
+  const [editSessions, setEditSessions] = useState<EditSession[]>(loadEditSessions);
   const [currentSessionId, setCurrentSessionId] = useState(() => makeId());
   const [selectedHistory, setSelectedHistory] = useState<HistoryEntry | null>(null);
   const [unlocked, setUnlocked] = useState(false);
@@ -159,6 +165,10 @@ function App() {
   const [size, setSize] = useState("auto");
   const [quality, setQuality] = useState("auto");
   const latestRef = useRef({ settings, editImages, currentSessionId });
+
+  useEffect(() => {
+    localStorage.setItem(EDIT_SESSIONS_KEY, JSON.stringify(editSessions));
+  }, [editSessions]);
 
   useEffect(() => {
     latestRef.current = { settings, editImages, currentSessionId };
@@ -317,7 +327,7 @@ function App() {
             {history.length === 0 ? (
               <div className="empty-history">完成分析或生成后会显示在这里。</div>
             ) : (
-              latestEntries([...editSessions, ...history]).map((item, index) => <HistoryRow key={`${item.CreatedAt}-${index}`} item={item} onClick={() => setSelectedHistory(item)} />)
+              latestEntries([...editSessions, ...history.filter((item) => item.Action !== "调用绘图模型编辑")]).map((item, index) => <HistoryRow key={`${item.CreatedAt}-${index}`} item={item} onClick={() => setSelectedHistory(item)} />)
             )}
           </div>
         </aside>
