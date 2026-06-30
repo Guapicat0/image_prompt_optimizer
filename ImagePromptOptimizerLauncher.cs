@@ -1,4 +1,4 @@
-using Microsoft.Web.WebView2.Core;
+﻿using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using System;
 using System.Collections;
@@ -210,7 +210,7 @@ public sealed class MainForm : Form
             var response = await ApiClient.Analyze(s.ChatBaseUrl, s.ChatApiKey, s.ChatModel, analysisMime, analysisBase64);
             sw.Stop();
             AnalysisResult result = ParseAnalysis(response);
-            history.Add(new HistoryItem("分析并生成提示词", "成功", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), result.EditingPrompt, ""));
+            history.Add(new HistoryItem("分析并生成提示词", "成功", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), result.EditingPrompt, "", String.Join(Environment.NewLine, result.Issues.ToArray()), result.NegativePrompt, result.Rationale, "", "", new object[] { ImageHistoryPayload(image) }));
             await Send("analysisResult", new {
                 meta = "完成时间：" + Now() + " · 处理耗时：" + FormatDuration(sw.ElapsedMilliseconds),
                 issues = String.Join(Environment.NewLine, result.Issues.ToArray()) + Environment.NewLine + Environment.NewLine + "优化思路：" + result.Rationale,
@@ -223,7 +223,7 @@ public sealed class MainForm : Form
         {
             sw.Stop();
             failure = ex;
-            history.Add(new HistoryItem("分析并生成提示词", "失败", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), "", Friendly(ex)));
+            history.Add(new HistoryItem("分析并生成提示词", "失败", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), "", Friendly(ex), "", "", "", "", "", new object[] { ImageHistoryPayload(image) }));
         }
         if (failure != null)
         {
@@ -249,14 +249,14 @@ public sealed class MainForm : Form
             string dataUrl = ExtractImageDataUrl(response);
             string savedPath = await SaveImageToLocal(dataUrl);
             sw.Stop();
-            history.Add(new HistoryItem("调用绘图模型编辑", "成功", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, ""));
+            history.Add(new HistoryItem("调用绘图模型编辑", "成功", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, "", "", "", "", savedPath, dataUrl, HistoryImagePayloads(images)));
             await Send("editResult", new { prompt = prompt, dataUrl = dataUrl, path = savedPath, history = history.LoadLatest(200) });
         }
         catch (Exception ex)
         {
             sw.Stop();
             failure = ex;
-            history.Add(new HistoryItem("调用绘图模型编辑", "失败", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, Friendly(ex)));
+            history.Add(new HistoryItem("调用绘图模型编辑", "失败", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, Friendly(ex), "", "", "", "", "", HistoryImagePayloads(images)));
         }
         if (failure != null)
         {
@@ -265,6 +265,17 @@ public sealed class MainForm : Form
         }
     }
 
+    private object ImageHistoryPayload(Dictionary<string, object> image)
+    {
+        return new { name = S(image, "name"), path = S(image, "path"), mime = S(image, "mime"), dataUrl = S(image, "dataUrl") };
+    }
+
+    private object[] HistoryImagePayloads(List<Dictionary<string, object>> images)
+    {
+        var result = new List<object>();
+        foreach (var image in images) result.Add(ImageHistoryPayload(image));
+        return result.ToArray();
+    }
     private object FilePayload(string path)
     {
         string mime = InferMime(path);
@@ -577,11 +588,12 @@ public sealed class AppSettings
 
 public sealed class HistoryItem
 {
-    public string CreatedAt, Action, Status, Model, FileName, Duration, Prompt, Error;
+    public string CreatedAt, Action, Status, Model, FileName, Duration, Prompt, Error, Issues, NegativePrompt, Rationale, OutputPath, OutputDataUrl;
+    public object[] InputImages;
     public HistoryItem() { }
-    public HistoryItem(string action, string status, string model, string fileName, string duration, string prompt, string error)
+    public HistoryItem(string action, string status, string model, string fileName, string duration, string prompt, string error, string issues, string negativePrompt, string rationale, string outputPath, string outputDataUrl, object[] inputImages)
     {
-        CreatedAt = DateTime.Now.ToString("yyyy/M/d HH:mm:ss"); Action = action; Status = status; Model = model; FileName = fileName; Duration = duration; Prompt = Trunc(prompt, 2400); Error = Trunc(error, 1800);
+        CreatedAt = DateTime.Now.ToString("yyyy/M/d HH:mm:ss"); Action = action; Status = status; Model = model; FileName = fileName; Duration = duration; Prompt = Trunc(prompt, 6000); Error = Trunc(error, 3000); Issues = Trunc(issues, 4000); NegativePrompt = Trunc(negativePrompt, 3000); Rationale = Trunc(rationale, 3000); OutputPath = outputPath ?? ""; OutputDataUrl = outputDataUrl ?? ""; InputImages = inputImages ?? new object[0];
     }
     private static string Trunc(string v, int max) { v = v ?? ""; return v.Length > max ? v.Substring(0, max) + "..." : v; }
 }

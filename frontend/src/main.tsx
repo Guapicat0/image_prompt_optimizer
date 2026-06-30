@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   CheckCircle2,
@@ -31,6 +31,20 @@ declare global {
 }
 
 type FilePayload = { name: string; path?: string; mime: string; base64: string; dataUrl: string };
+type EditTurn = { prompt: string; dataUrl: string; path: string; model: string; createdAt: string; sourceImages: FilePayload[] };
+type EditSession = {
+  id: string;
+  CreatedAt: string;
+  UpdatedAt: string;
+  Action: string;
+  Status: string;
+  Model: string;
+  FileName: string;
+  Duration?: string;
+  Prompt?: string;
+  Error?: string;
+  Turns: EditTurn[];
+};
 type HistoryItem = {
   CreatedAt: string;
   Action: string;
@@ -40,7 +54,16 @@ type HistoryItem = {
   Duration?: string;
   Prompt?: string;
   Error?: string;
+  Issues?: string;
+  NegativePrompt?: string;
+  Rationale?: string;
+  OutputPath?: string;
+  OutputDataUrl?: string;
+  InputImages?: Array<{ name?: string; path?: string; mime?: string; dataUrl?: string }>;
+  Turns?: EditTurn[];
+  UpdatedAt?: string;
 };
+type HistoryEntry = HistoryItem | EditSession;
 type Settings = {
   ImageBaseUrl: string;
   ImageApiKey: string;
@@ -90,10 +113,37 @@ const readFiles = async (files: File[], limit: number): Promise<FilePayload[]> =
   );
 };
 
+const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const isEditSession = (item: HistoryEntry): item is EditSession => Array.isArray((item as EditSession).Turns);
+const latestEntries = (items: HistoryEntry[]) =>
+  [...items].sort((a, b) => new Date((b as EditSession).UpdatedAt || b.CreatedAt).getTime() - new Date((a as EditSession).UpdatedAt || a.CreatedAt).getTime());
+const upsertEditSession = (sessions: EditSession[], id: string, turn: EditTurn, model: string): EditSession[] => {
+  const existing = sessions.find((session) => session.id === id);
+  const turns = existing ? [...existing.Turns, turn] : [turn];
+  const firstImage = turns[0]?.sourceImages?.[0];
+  const next: EditSession = {
+    id,
+    CreatedAt: existing?.CreatedAt || turn.createdAt,
+    UpdatedAt: turn.createdAt,
+    Action: "图像编辑对话",
+    Status: turns.some((t) => t.path) ? "成功" : "进行中",
+    Model: model || existing?.Model || turn.model,
+    FileName: firstImage?.name || existing?.FileName || "未记录",
+    Duration: turns.length === 1 ? "1 轮" : `${turns.length} 轮`,
+    Prompt: turns[turns.length - 1]?.prompt || "",
+    Error: "",
+    Turns: turns,
+  };
+  return [next, ...sessions.filter((session) => session.id !== id)];
+};
+
 function App() {
   const [view, setView] = useState<"analysis" | "edit" | "settings">("settings");
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [editSessions, setEditSessions] = useState<EditSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState(() => makeId());
+  const [selectedHistory, setSelectedHistory] = useState<HistoryEntry | null>(null);
   const [unlocked, setUnlocked] = useState(false);
   const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState<"" | "analysis" | "edit">("");
@@ -104,10 +154,15 @@ function App() {
   const [negative, setNegative] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
   const [usingDefault, setUsingDefault] = useState(false);
-  const [messages, setMessages] = useState<Array<{ prompt: string; dataUrl: string; path: string }>>([]);
+  const [messages, setMessages] = useState<EditTurn[]>([]);
   const [status, setStatus] = useState({ image: "等待检测", chat: "等待检测", analysis: "", edit: "" });
   const [size, setSize] = useState("auto");
   const [quality, setQuality] = useState("auto");
+  const latestRef = useRef({ settings, editImages, currentSessionId });
+
+  useEffect(() => {
+    latestRef.current = { settings, editImages, currentSessionId };
+  }, [settings, editImages, currentSessionId]);
 
   useEffect(() => {
     const handle = (message: { type: string; payload: any }) => {
@@ -145,11 +200,22 @@ function App() {
       }
       if (type === "editResult") {
         setBusy("");
-        setMessages((prev) => [...prev, { prompt: payload.prompt, dataUrl: payload.dataUrl, path: payload.path }]);
-        setHistory(payload.history || []);
+        const turn: EditTurn = {
+          prompt: payload.prompt,
+          dataUrl: payload.dataUrl,
+          path: payload.path,
+          model: settings.ImageModel,
+          createdAt: new Date().toLocaleString(),
+          sourceImages: latestRef.current.editImages,
+        };
+        setMessages((prev) => [...prev, turn]);
+        setEditSessions((prev) => upsertEditSession(prev, latestRef.current.currentSessionId, turn, latestRef.current.settings.ImageModel));
         setStatus((s) => ({ ...s, edit: `已保存到：${payload.path}` }));
       }
-      if (type === "history") setHistory(payload.history || []);
+      if (type === "history") {
+        setHistory(payload.history || []);
+        setSelectedHistory(null);
+      }
       if (type === "error") {
         setBusy("");
         setChecking(false);
@@ -201,6 +267,16 @@ function App() {
     post("edit", { settings: settingsPayload, images: editImages, prompt: editPrompt, size, quality });
   };
 
+  const startNewEditSession = () => {
+    setCurrentSessionId(makeId());
+    setMessages([]);
+    setEditImages([]);
+    setEditPrompt("");
+    setUsingDefault(false);
+    setStatus((s) => ({ ...s, edit: "已开启新一轮对话。" }));
+    setView("edit");
+  };
+
   const toggleDefault = () => {
     if (usingDefault) {
       setEditPrompt("");
@@ -241,7 +317,7 @@ function App() {
             {history.length === 0 ? (
               <div className="empty-history">完成分析或生成后会显示在这里。</div>
             ) : (
-              history.map((item, index) => <HistoryRow key={`${item.CreatedAt}-${index}`} item={item} />)
+              latestEntries([...editSessions, ...history]).map((item, index) => <HistoryRow key={`${item.CreatedAt}-${index}`} item={item} onClick={() => setSelectedHistory(item)} />)
             )}
           </div>
         </aside>
@@ -303,7 +379,18 @@ function App() {
           />
         )}
       </main>
-    </div>
+        {selectedHistory && (
+          <HistoryDetail
+            item={selectedHistory}
+            onClose={() => setSelectedHistory(null)}
+            onUsePrompt={(value) => {
+              setEditPrompt(value);
+              setUsingDefault(false);
+              setView("edit");
+              setSelectedHistory(null);
+            }}
+          />
+        )}    </div>
   );
 }
 
@@ -441,7 +528,7 @@ function EditView(props: {
   setSettings: (settings: Settings) => void;
   images: FilePayload[];
   setImages: (images: FilePayload[]) => void;
-  messages: Array<{ prompt: string; dataUrl: string; path: string }>;
+  messages: EditTurn[];
   prompt: string;
   setPrompt: (value: string) => void;
   usingDefault: boolean;
@@ -495,6 +582,7 @@ function EditView(props: {
           placeholder="描述你想怎样编辑图像..."
         />
         <div className="composer-toolbar">
+          <button className="btn" onClick={props.onNewSession}>新对话</button>
           <button className="btn" onClick={props.onPick} disabled={props.images.length >= 3}><ImagePlus size={16} />添加图像</button>
           <button className={props.usingDefault ? "btn active" : "btn"} onClick={props.toggleDefault}>使用第 3 步默认提示词</button>
           <ModelSelect compact value={props.settings.ImageModel} models={props.settings.ImageModels} list="image-models" onChange={(v) => props.setSettings({ ...props.settings, ImageModel: v })} />
@@ -542,14 +630,94 @@ function Nav({ active, disabled, icon, children, onClick }: { active: boolean; d
   );
 }
 
-function HistoryRow({ item }: { item: HistoryItem }) {
+function HistoryRow({ item, onClick }: { item: HistoryEntry; onClick: () => void }) {
   return (
-    <div className="history-row">
-      <div className="history-action">{item.Action}</div>
+    <button className="history-row" onClick={onClick}>
+      <div className="history-action">{isEditSession(item) ? `${item.Action} · ${item.Turns.length} 轮` : item.Action}</div>
       <div className="history-meta">{item.Status} · {item.Model || "未记录模型"}</div>
       <div className="history-date">{item.CreatedAt}</div>
+    </button>
+  );
+}
+
+function HistoryDetail({ item, onClose, onUsePrompt }: { item: HistoryEntry; onClose: () => void; onUsePrompt: (value: string) => void }) {
+  const isEdit = item.Action.includes("绘图") || item.Action.includes("编辑");
+  const issueText = [item.Issues, item.Rationale ? `优化思路：${item.Rationale}` : ""].filter(Boolean).join("\n\n");
+  return (
+    <div className="history-overlay" onClick={onClose}>
+      <section className="history-detail" onClick={(event) => event.stopPropagation()}>
+        <div className="history-detail-head">
+          <div>
+            <p className="eyebrow">History</p>
+            <h2>{item.Action}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose}><X size={17} /></button>
+        </div>
+        <div className="history-detail-grid">
+          <Info label="状态" value={item.Status} />
+          <Info label="模型" value={item.Model || "未记录"} />
+          <Info label="文件" value={item.FileName || "未记录"} />
+          <Info label="耗时" value={item.Duration || "未记录"} />
+          <Info label="时间" value={item.CreatedAt} wide />
+        </div>
+        {item.Error && <DetailBlock title="错误详情" value={item.Error} tone="error" />}
+        {session && <SessionImages session={session} />}
+        {!session && (item as HistoryItem).InputImages && (item as HistoryItem).InputImages!.length > 0 && (
+          <div className="session-originals"><h3>原始图</h3><div className="history-image-grid">{(item as HistoryItem).InputImages!.map((img, index) => img.dataUrl ? <ImageBlock key={`${img.name}-${index}`} title={img.name || `图片 ${index + 1}`} src={img.dataUrl} caption={img.path} /> : null)}</div></div>
+        )}
+        {issueText && <DetailBlock title="分析结果" value={issueText} />}
+        {item.Prompt && <DetailBlock title={isEdit ? "图像编辑提示词" : "生成的提示词"} value={item.Prompt} />}
+        {item.NegativePrompt && <DetailBlock title="负面提示词" value={item.NegativePrompt} />}
+        {(item as HistoryItem).OutputDataUrl && <ImageBlock title="生成图片" src={(item as HistoryItem).OutputDataUrl || ""} caption={(item as HistoryItem).OutputPath || ""} />}
+        {(item as HistoryItem).OutputPath && <DetailBlock title="生成图片保存位置" value={(item as HistoryItem).OutputPath || ""} />}
+        {item.Prompt && (
+          <div className="history-actions">
+            <button className="btn-primary" onClick={() => onUsePrompt(item.Prompt || "")}>用这个提示词继续编辑</button>
+          </div>
+        )}
+      </section>
     </div>
   );
+}
+
+
+function ImageBlock({ title, src, caption }: { title: string; src: string; caption?: string }) {
+  return (
+    <div className="detail-image-block">
+      <h3>{title}</h3>
+      <img src={src} />
+      {caption && <div>{caption}</div>}
+    </div>
+  );
+}
+
+function SessionImages({ session }: { session: EditSession }) {
+  const originals = session.Turns[0]?.sourceImages || [];
+  return (
+    <div className="session-history">
+      {originals.length > 0 && (
+        <div className="session-originals">
+          <h3>原始图</h3>
+          <div className="history-image-grid">
+            {originals.map((img, index) => <ImageBlock key={`${img.name}-${index}`} title={img.name} src={img.dataUrl} caption={img.path} />)}
+          </div>
+        </div>
+      )}
+      {session.Turns.map((turn, index) => (
+        <div className="session-turn" key={`${turn.path}-${index}`}>
+          <div className="turn-prompt">第 {index + 1} 轮：{turn.prompt}</div>
+          <ImageBlock title="生成图" src={turn.dataUrl} caption={turn.path} />
+        </div>
+      ))}
+    </div>
+  );
+}
+function Info({ label, value, wide }: { label: string; value: string; wide?: boolean }) {
+  return <div className={wide ? "info wide" : "info"}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function DetailBlock({ title, value, tone }: { title: string; value: string; tone?: "error" }) {
+  return <div className={tone === "error" ? "detail-block error" : "detail-block"}><h3>{title}</h3><pre>{value}</pre></div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

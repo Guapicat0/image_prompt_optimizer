@@ -88,15 +88,173 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .history-head button:hover { color: #fff; }
 .history-list { min-height: 0; flex: 1; overflow: auto; padding-right: 2px; }
 .history-row {
+  display: block;
+  width: 100%;
   border: 1px solid rgba(255,255,255,.07);
   border-radius: 10px;
   background: rgba(255,255,255,.04);
+  color: inherit;
   padding: 10px;
   margin-bottom: 8px;
+  text-align: left;
 }
+.history-row:hover { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.075); }
 .history-action { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #f7f7f7; font-size: 13px; font-weight: 650; }
 .history-meta, .history-date, .empty-history { margin-top: 4px; color: #8d8d96; font-size: 12px; }
 .empty-history { border: 1px dashed rgba(255,255,255,.12); border-radius: 10px; padding: 14px; line-height: 1.6; }
+
+.history-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(12,12,15,.32);
+}
+.history-detail {
+  width: min(620px, calc(100vw - 32px));
+  height: 100%;
+  overflow: auto;
+  border-left: 1px solid rgba(20,20,20,.1);
+  background: #fff;
+  padding: 22px;
+  box-shadow: -20px 0 70px rgba(0,0,0,.18);
+}
+.history-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.history-detail-head h2 {
+  margin: 0;
+  color: #171717;
+  font-size: 22px;
+}
+.icon-button {
+  display: grid;
+  height: 34px;
+  width: 34px;
+  place-items: center;
+  border: 1px solid #e1e1de;
+  border-radius: 9px;
+  background: #fff;
+  color: #222;
+}
+.history-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+.info {
+  border: 1px solid #e6e6e2;
+  border-radius: 10px;
+  background: #f8f8f6;
+  padding: 10px;
+}
+.info.wide { grid-column: 1 / -1; }
+.info span {
+  display: block;
+  color: #77777f;
+  font-size: 12px;
+}
+.info strong {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: #171717;
+  font-size: 13px;
+  font-weight: 700;
+}
+.detail-block {
+  margin-top: 14px;
+  border: 1px solid #e4e4e0;
+  border-radius: 12px;
+  background: #fbfbf9;
+  padding: 13px;
+}
+.detail-block.error { border-color: #f0c5c5; background: #fff7f7; }
+.detail-block h3 {
+  margin: 0 0 8px;
+  color: #303036;
+  font-size: 13px;
+}
+.detail-block pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #222;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.history-actions {
+  position: sticky;
+  bottom: 0;
+  margin-top: 18px;
+  padding-top: 12px;
+  background: linear-gradient(180deg, rgba(255,255,255,0), #fff 32%);
+  text-align: right;
+}
+.session-history, .session-originals { margin-top: 14px; }
+.session-originals h3 {
+  margin: 0 0 10px;
+  color: #303036;
+  font-size: 13px;
+}
+.history-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.detail-image-block {
+  margin-top: 14px;
+  border: 1px solid #e4e4e0;
+  border-radius: 12px;
+  background: #fbfbf9;
+  padding: 10px;
+}
+.history-image-grid .detail-image-block { margin-top: 0; }
+.detail-image-block h3 {
+  margin: 0 0 8px;
+  overflow: hidden;
+  color: #303036;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-image-block img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  border-radius: 9px;
+  object-fit: contain;
+  background: #f1f1ee;
+}
+.detail-image-block div {
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.session-turn {
+  margin-top: 16px;
+  border-top: 1px solid #ecece8;
+  padding-top: 14px;
+}
+.turn-prompt {
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 12px;
+  background: #ededeb;
+  padding: 10px 12px;
+  color: #171717;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
 
 .main { min-width: 0; height: 100vh; overflow: hidden; padding: 22px; }
 .main.full { grid-column: 1 / -1; }
