@@ -651,8 +651,10 @@ function HistoryRow({ item, onClick }: { item: HistoryEntry; onClick: () => void
 }
 
 function HistoryDetail({ item, onClose, onUsePrompt }: { item: HistoryEntry; onClose: () => void; onUsePrompt: (value: string) => void }) {
+  const session = isEditSession(item) ? item : null;
+  const record = item as HistoryItem;
   const isEdit = item.Action.includes("绘图") || item.Action.includes("编辑");
-  const issueText = [item.Issues, item.Rationale ? `优化思路：${item.Rationale}` : ""].filter(Boolean).join("\n\n");
+  const issueText = session ? "" : [record.Issues, record.Rationale ? `优化思路：${record.Rationale}` : ""].filter(Boolean).join("\n\n");
   return (
     <div className="history-overlay" onClick={onClose}>
       <section className="history-detail" onClick={(event) => event.stopPropagation()}>
@@ -672,14 +674,14 @@ function HistoryDetail({ item, onClose, onUsePrompt }: { item: HistoryEntry; onC
         </div>
         {item.Error && <DetailBlock title="错误详情" value={item.Error} tone="error" />}
         {session && <SessionImages session={session} />}
-        {!session && (item as HistoryItem).InputImages && (item as HistoryItem).InputImages!.length > 0 && (
-          <div className="session-originals"><h3>原始图</h3><div className="history-image-grid">{(item as HistoryItem).InputImages!.map((img, index) => img.dataUrl ? <ImageBlock key={`${img.name}-${index}`} title={img.name || `图片 ${index + 1}`} src={img.dataUrl} caption={img.path} /> : null)}</div></div>
+        {!session && record.InputImages && record.InputImages.length > 0 && (
+          <div className="session-originals"><h3>原始图</h3><div className="history-image-grid">{record.InputImages.map((img, index) => img.dataUrl ? <ImageBlock key={`${img.name}-${index}`} title={img.name || `图片 ${index + 1}`} src={img.dataUrl} caption={img.path} /> : null)}</div></div>
         )}
         {issueText && <DetailBlock title="分析结果" value={issueText} />}
         {item.Prompt && <DetailBlock title={isEdit ? "图像编辑提示词" : "生成的提示词"} value={item.Prompt} />}
-        {item.NegativePrompt && <DetailBlock title="负面提示词" value={item.NegativePrompt} />}
-        {(item as HistoryItem).OutputDataUrl && <ImageBlock title="生成图片" src={(item as HistoryItem).OutputDataUrl || ""} caption={(item as HistoryItem).OutputPath || ""} />}
-        {(item as HistoryItem).OutputPath && <DetailBlock title="生成图片保存位置" value={(item as HistoryItem).OutputPath || ""} />}
+        {record.NegativePrompt && <DetailBlock title="负面提示词" value={record.NegativePrompt} />}
+        {record.OutputDataUrl && <ImageBlock title="生成图片" src={record.OutputDataUrl || ""} caption={record.OutputPath || ""} />}
+        {record.OutputPath && <DetailBlock title="生成图片保存位置" value={record.OutputPath || ""} />}
         {item.Prompt && (
           <div className="history-actions">
             <button className="btn-primary" onClick={() => onUsePrompt(item.Prompt || "")}>用这个提示词继续编辑</button>
