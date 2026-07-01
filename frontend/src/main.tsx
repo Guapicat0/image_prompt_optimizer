@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   CheckCircle2,
@@ -30,8 +30,8 @@ declare global {
   }
 }
 
-type FilePayload = { name: string; path?: string; mime: string; base64: string; dataUrl: string };
-type EditTurn = { prompt: string; dataUrl: string; path: string; model: string; createdAt: string; sourceImages: FilePayload[] };
+type FilePayload = { name: string; path?: string; mime: string; base64: string; dataUrl: string; localUrl?: string };
+type EditTurn = { prompt: string; dataUrl: string; path: string; model: string; createdAt: string; sourceImages: FilePayload[]; localUrl?: string };
 type EditSession = {
   id: string;
   CreatedAt: string;
@@ -77,9 +77,38 @@ type Settings = {
 
 const EDIT_SESSIONS_KEY = "image-prompt-optimizer-edit-sessions";
 
-const loadEditSessions = (): EditSession[] => {
-  try { return JSON.parse(localStorage.getItem(EDIT_SESSIONS_KEY) || "[]"); } catch { return []; }
+const localImageUrl = (path: unknown) => {
+  const value = String(path || "");
+  return value ? `https://app.local/__local_image__?path=${encodeURIComponent(value)}` : "";
 };
+const stripStoredImage = <T extends Partial<FilePayload> | Partial<EditTurn>>(image: T): T => {
+  const path = String(image?.path || "");
+  return {
+    ...image,
+    base64: "",
+    dataUrl: "",
+    localUrl: image?.localUrl || localImageUrl(path),
+  };
+};
+const stripStoredTurn = (turn: EditTurn): EditTurn => ({
+  ...stripStoredImage(turn),
+  sourceImages: (turn.sourceImages || []).map((image) => stripStoredImage(image) as FilePayload),
+});
+const stripStoredSession = (session: EditSession): EditSession => ({
+  ...session,
+  Turns: (session.Turns || []).map(stripStoredTurn),
+});
+const stripStoredSessions = (sessions: EditSession[]) => sessions.map(stripStoredSession);
+const attachLocalUrlsToTurn = (turn: EditTurn): EditTurn => ({
+  ...turn,
+  localUrl: turn.localUrl || localImageUrl(turn.path),
+  sourceImages: (turn.sourceImages || []).map((image) => ({
+    ...image,
+    localUrl: image.localUrl || localImageUrl(image.path),
+  })),
+});
+
+const loadEditSessions = (): EditSession[] => [];
 
 const defaultSettings: Settings = {
   ImageBaseUrl: "https://www.cctq.ai/v1",
@@ -123,6 +152,101 @@ const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const isEditSession = (item: HistoryEntry): item is EditSession => Array.isArray((item as EditSession).Turns);
 const latestEntries = (items: HistoryEntry[]) =>
   [...items].sort((a, b) => new Date((b as EditSession).UpdatedAt || b.CreatedAt).getTime() - new Date((a as EditSession).UpdatedAt || a.CreatedAt).getTime());
+const imageSrc = (image: Partial<FilePayload> | Partial<EditTurn> | null | undefined) => image?.dataUrl || "";
+const fileNameFromPath = (path: unknown, fallback = "edited.png") => {
+  const value = String(path || fallback);
+  return value.split(/[\\/]/).pop() || fallback;
+};
+const imagePayloadFromTurn = (turn: Partial<EditTurn>): FilePayload => {
+  const dataUrl = turn.dataUrl || "";
+  return {
+    name: fileNameFromPath(turn.path),
+    path: turn.path || "",
+    mime: "image/png",
+    base64: dataUrl.includes(",") ? dataUrl.split(",")[1] : "",
+    dataUrl,
+    localUrl: turn.localUrl || localImageUrl(turn.path),
+  };
+};
+const sessionNeedsHydration = (session: EditSession) =>
+  session.Turns.some((turn) => (turn.path && !turn.dataUrl) || turn.sourceImages?.some((img) => img?.path && !img.dataUrl));
+const isEditHistoryItem = (item: HistoryItem) =>
+  item.Action.includes("图像编辑") || item.Action.includes("绘图模型编辑") || item.Action === "调用绘图模型编辑";
+const sessionFromHistoryItem = (item: HistoryItem): EditSession | null => {
+  if (!isEditHistoryItem(item)) return null;
+  const outputPath = item.OutputPath || "";
+  const inputImages = (item.InputImages || []).map((image) => ({
+    name: image.name || fileNameFromPath(image.path, "image.png"),
+    path: image.path || "",
+    mime: image.mime || "image/png",
+    base64: "",
+    dataUrl: image.dataUrl || "",
+    localUrl: localImageUrl(image.path),
+  }) as FilePayload);
+  const turn = stripStoredImage({
+    prompt: item.Prompt || "",
+    dataUrl: "",
+    path: outputPath,
+    model: item.Model || "",
+    createdAt: item.CreatedAt,
+    sourceImages: inputImages,
+  }) as EditTurn;
+  return {
+    id: `history-${item.CreatedAt}-${outputPath}`,
+    CreatedAt: item.CreatedAt,
+    UpdatedAt: item.UpdatedAt || item.CreatedAt,
+    Action: "图像编辑对话",
+    Status: item.Status,
+    Model: item.Model,
+    FileName: item.FileName || fileNameFromPath(outputPath),
+    Duration: item.Duration || "1 轮",
+    Prompt: item.Prompt || "",
+    Error: item.Error || "",
+    Turns: [turn],
+  };
+};
+const sessionsFromHistory = (items: HistoryItem[]) => {
+  const sessions = items.map(sessionFromHistoryItem).filter((session): session is EditSession => Boolean(session));
+  const byOutput = new Map<string, EditSession>();
+  for (const session of sessions) {
+    const outputPath = session.Turns[0]?.path;
+    if (outputPath) byOutput.set(outputPath, session);
+  }
+
+  const rootFor = (session: EditSession) => {
+    let current = session;
+    const seen = new Set<string>();
+    while (!seen.has(current.id)) {
+      seen.add(current.id);
+      const inputPath = current.Turns[0]?.sourceImages?.map((image) => image.path).find(Boolean);
+      const parent = inputPath ? byOutput.get(inputPath) : null;
+      if (!parent || parent.id === current.id) break;
+      current = parent;
+    }
+    return current;
+  };
+
+  const grouped = new Map<string, EditSession>();
+  for (const session of sessions) {
+    const root = rootFor(session);
+    const existing = grouped.get(root.id);
+    if (existing) {
+      existing.Turns = [...existing.Turns, ...session.Turns].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      existing.UpdatedAt = new Date(session.UpdatedAt).getTime() > new Date(existing.UpdatedAt).getTime() ? session.UpdatedAt : existing.UpdatedAt;
+      existing.Prompt = existing.Turns[existing.Turns.length - 1]?.prompt || existing.Prompt;
+      existing.Duration = `${existing.Turns.length} 轮`;
+    } else {
+      grouped.set(root.id, { ...root, Turns: [...session.Turns] });
+    }
+  }
+
+  return Array.from(grouped.values()).map((session) => ({
+    ...session,
+    Turns: session.Turns.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    Duration: `${session.Turns.length} 轮`,
+    Prompt: session.Turns[session.Turns.length - 1]?.prompt || session.Prompt,
+  }));
+};
 const upsertEditSession = (sessions: EditSession[], id: string, turn: EditTurn, model: string): EditSession[] => {
   const existing = sessions.find((session) => session.id === id);
   const turns = existing ? [...existing.Turns, turn] : [turn];
@@ -144,7 +268,7 @@ const upsertEditSession = (sessions: EditSession[], id: string, turn: EditTurn, 
 };
 
 function App() {
-  const [view, setView] = useState<"analysis" | "edit" | "settings">("settings");
+  const [view, setView] = useState<"analysis" | "analysisHistory" | "edit" | "settings">("settings");
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [editSessions, setEditSessions] = useState<EditSession[]>(loadEditSessions);
@@ -159,16 +283,12 @@ function App() {
   const [prompt, setPrompt] = useState("");
   const [negative, setNegative] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
-  const [usingDefault, setUsingDefault] = useState(false);
   const [messages, setMessages] = useState<EditTurn[]>([]);
   const [status, setStatus] = useState({ image: "等待检测", chat: "等待检测", analysis: "", edit: "" });
   const [size, setSize] = useState("auto");
   const [quality, setQuality] = useState("auto");
   const latestRef = useRef({ settings, editImages, currentSessionId });
-
-  useEffect(() => {
-    localStorage.setItem(EDIT_SESSIONS_KEY, JSON.stringify(editSessions));
-  }, [editSessions]);
+  const visibleHistory = latestEntries([...sessionsFromHistory(history), ...history.filter((item) => !isEditHistoryItem(item))]);
 
   useEffect(() => {
     latestRef.current = { settings, editImages, currentSessionId };
@@ -205,7 +325,6 @@ function App() {
         setPrompt(payload.prompt || "");
         setNegative(payload.negative || "");
         setEditPrompt("");
-        setUsingDefault(false);
         setHistory(payload.history || []);
       }
       if (type === "editResult") {
@@ -217,10 +336,20 @@ function App() {
           model: settings.ImageModel,
           createdAt: new Date().toLocaleString(),
           sourceImages: latestRef.current.editImages,
+          localUrl: localImageUrl(payload.path),
         };
         setMessages((prev) => [...prev, turn]);
-        setEditSessions((prev) => upsertEditSession(prev, latestRef.current.currentSessionId, turn, latestRef.current.settings.ImageModel));
+        setEditImages([imagePayloadFromTurn(turn)]);
+        setEditPrompt("");
+        setHistory(payload.history || []);
         setStatus((s) => ({ ...s, edit: `已保存到：${payload.path}` }));
+      }
+      if (type === "editSessionHydrated") {
+        const turns = (Array.isArray(payload.turns) ? payload.turns : []).map(attachLocalUrlsToTurn);
+        setMessages(turns);
+        const last = turns[turns.length - 1];
+        setEditImages(last ? [imagePayloadFromTurn(last)] : []);
+        setStatus((s) => ({ ...s, edit: turns.some((turn: EditTurn) => !imageSrc(turn)) ? "部分历史图片文件已不存在，无法恢复。" : "已恢复历史图片，可以继续编辑。" }));
       }
       if (type === "history") {
         setHistory(payload.history || []);
@@ -246,11 +375,6 @@ function App() {
     chatApiKey: settings.ChatApiKey,
     chatModel: settings.ChatModel,
   };
-  const defaultPrompt = useMemo(
-    () => [prompt.trim(), negative.trim() ? `负面提示词：${negative.trim()}` : ""].filter(Boolean).join("\n\n"),
-    [prompt, negative],
-  );
-
   const handleDrop = (kind: "analysis" | "edit") => async (event: React.DragEvent) => {
     event.preventDefault();
     const limit = kind === "analysis" ? 1 : 3 - editImages.length;
@@ -282,24 +406,36 @@ function App() {
     setMessages([]);
     setEditImages([]);
     setEditPrompt("");
-    setUsingDefault(false);
     setStatus((s) => ({ ...s, edit: "已开启新一轮对话。" }));
     setView("edit");
   };
 
-  const toggleDefault = () => {
-    if (usingDefault) {
-      setEditPrompt("");
-      setUsingDefault(false);
-    } else if (defaultPrompt) {
-      setEditPrompt(defaultPrompt);
-      setUsingDefault(true);
+  const resumeEditSession = (session: EditSession) => {
+    const turns = Array.isArray(session.Turns) ? session.Turns : [];
+    const storedTurns = stripStoredSessions([{ ...session, Turns: turns }])[0].Turns;
+    const last = storedTurns[storedTurns.length - 1];
+    setCurrentSessionId(session.id);
+    setMessages(storedTurns);
+    setEditImages(last ? [imagePayloadFromTurn(last)] : (storedTurns[0]?.sourceImages || []));
+    setEditPrompt("");
+    setSelectedHistory(null);
+    setStatus((s) => ({ ...s, edit: sessionNeedsHydration(session) ? "正在从本地文件恢复历史图片..." : "已回到图像编辑对话，可以继续编辑。" }));
+    setView("edit");
+    if (sessionNeedsHydration(session)) post("hydrateEditSession", { sessionId: session.id, turns });
+  };
+
+  const openHistory = (item: HistoryEntry) => {
+    if (isEditSession(item)) {
+      resumeEditSession(item);
+      return;
     }
+    setSelectedHistory(item);
+    setView("analysisHistory");
   };
 
   return (
     <div className="app-shell">
-      {!unlocked && view !== "settings" ? null : (
+      {unlocked && (
         <aside className="sidebar">
           <div className="brand">
             <div className="brand-mark">IP</div>
@@ -309,30 +445,30 @@ function App() {
             </div>
           </div>
           <nav className="nav-stack">
-            <Nav active={view === "settings"} icon={<Settings2 size={17} />} onClick={() => setView("settings")}>
-              模型服务
-            </Nav>
-            <Nav disabled={!unlocked} active={view === "analysis"} icon={<MessageSquareText size={17} />} onClick={() => setView("analysis")}>
-              分析提示词
+            <Nav disabled={!unlocked} active={view === "analysis"} icon={<Sparkles size={17} />} onClick={() => setView("analysis")}>
+              图像分析
             </Nav>
             <Nav disabled={!unlocked} active={view === "edit"} icon={<Wand2 size={17} />} onClick={() => setView("edit")}>
               图像编辑
             </Nav>
+            <button className="new-edit-button" disabled={!unlocked} onClick={startNewEditSession}>
+              <ImagePlus size={17} />新图像编辑
+            </button>
           </nav>
           <div className="history-head">
-            <span><History size={14} />历史记录</span>
+            <span><History size={14} />最近</span>
             <button onClick={() => post("clearHistory")}>清空</button>
           </div>
           <div className="history-list">
-            {history.length === 0 ? (
-              <div className="empty-history">完成分析或生成后会显示在这里。</div>
+            {visibleHistory.length === 0 ? (
+              <div className="empty-history">最近的分析和图像编辑对话会显示在这里。</div>
             ) : (
-              latestEntries([...editSessions, ...history.filter((item) => item.Action !== "调用绘图模型编辑")]).map((item, index) => <HistoryRow key={`${item.CreatedAt}-${index}`} item={item} onClick={() => setSelectedHistory(item)} />)
+              visibleHistory.map((item, index) => <HistoryRow key={`${item.CreatedAt}-${index}`} item={item} active={(isEditSession(item) && item.id === currentSessionId && view === "edit") || (!isEditSession(item) && selectedHistory === item && view === "analysisHistory")} onClick={() => openHistory(item)} />)
             )}
           </div>
         </aside>
       )}
-      <main className={unlocked || view === "settings" ? "main" : "main full"}>
+      <main className={unlocked ? "main" : "main full"}>
         <datalist id="image-models">{settings.ImageModels.map((m) => <option key={m} value={m} />)}</datalist>
         <datalist id="chat-models">{settings.ChatModels.map((m) => <option key={m} value={m} />)}</datalist>
         {view === "settings" && (
@@ -363,6 +499,9 @@ function App() {
             onNegative={setNegative}
           />
         )}
+        {view === "analysisHistory" && unlocked && selectedHistory && !isEditSession(selectedHistory) && (
+          <AnalysisHistoryView item={selectedHistory} />
+        )}
         {view === "edit" && unlocked && (
           <EditView
             settings={settings}
@@ -371,12 +510,7 @@ function App() {
             setImages={setEditImages}
             messages={messages}
             prompt={editPrompt}
-            setPrompt={(v) => {
-              setEditPrompt(v);
-              if (usingDefault && v !== defaultPrompt) setUsingDefault(false);
-            }}
-            usingDefault={usingDefault}
-            toggleDefault={toggleDefault}
+            setPrompt={setEditPrompt}
             size={size}
             setSize={setSize}
             quality={quality}
@@ -386,21 +520,15 @@ function App() {
             onDrop={handleDrop("edit")}
             onPick={() => post("pickEditImages", { existing: editImages.length })}
             onRun={runEdit}
+            onNewSession={startNewEditSession}
+            onUseImage={(image) => {
+              setEditImages([image]);
+              setStatus((s) => ({ ...s, edit: "已把这张图放入下一轮编辑。" }));
+            }}
           />
         )}
       </main>
-        {selectedHistory && (
-          <HistoryDetail
-            item={selectedHistory}
-            onClose={() => setSelectedHistory(null)}
-            onUsePrompt={(value) => {
-              setEditPrompt(value);
-              setUsingDefault(false);
-              setView("edit");
-              setSelectedHistory(null);
-            }}
-          />
-        )}    </div>
+    </div>
   );
 }
 
@@ -502,7 +630,7 @@ function AnalysisView(props: {
 }) {
   return (
     <section className="workspace scrollable">
-      <Header title="分析提示词" subtitle="选择用于分析的原图，由对话模型识别问题并生成可用于绘图编辑的提示词。" />
+      <Header title="图像分析" subtitle="选择用于分析的原图，由对话模型识别问题并生成可用于绘图编辑的提示词。" />
       <div className="two-column">
         <div className="panel">
           <div className="panel-head">
@@ -541,8 +669,6 @@ function EditView(props: {
   messages: EditTurn[];
   prompt: string;
   setPrompt: (value: string) => void;
-  usingDefault: boolean;
-  toggleDefault: () => void;
   size: string;
   setSize: (value: string) => void;
   quality: string;
@@ -552,6 +678,8 @@ function EditView(props: {
   onDrop: (event: React.DragEvent) => void;
   onPick: () => void;
   onRun: () => void;
+  onNewSession: () => void;
+  onUseImage: (image: FilePayload) => void;
 }) {
   return (
     <section className="chat-workspace">
@@ -566,11 +694,22 @@ function EditView(props: {
         ) : (
           props.messages.map((m, i) => (
             <div className="message-pair" key={`${m.path}-${i}`}>
+              {m.sourceImages?.some((img) => imageSrc(img)) && (
+                <div className="bubble-images user-images">
+                  {m.sourceImages.map((img, index) => imageSrc(img) ? <img key={`${img.name}-${index}`} src={imageSrc(img)} /> : null)}
+                </div>
+              )}
               <div className="user-bubble">{m.prompt}</div>
-              <div className="image-answer">
-                <img src={m.dataUrl} />
-                <div><Save size={13} />{m.path}</div>
-              </div>
+              {imageSrc(m) && (
+                <div className="image-answer">
+                  <img src={imageSrc(m)} />
+                  <button className="image-edit-button" onClick={() => props.onUseImage(imagePayloadFromTurn(m))}>编辑</button>
+                  <a className="image-save-button" href={imageSrc(m)} download={fileNameFromPath(m.path)}>
+                    <Save size={15} />
+                  </a>
+                  <div className="image-path"><Save size={13} />{m.path}</div>
+                </div>
+              )}
             </div>
           ))
         )}
@@ -579,7 +718,7 @@ function EditView(props: {
         <div className="chips-row">
           {props.images.map((img, i) => (
             <div className="thumb-chip" key={`${img.name}-${i}`}>
-              <img src={img.dataUrl} />
+              {imageSrc(img) && <img src={imageSrc(img)} />}
               <button onClick={() => props.setImages(props.images.filter((_, index) => index !== i))}><X size={12} /></button>
             </div>
           ))}
@@ -594,7 +733,6 @@ function EditView(props: {
         <div className="composer-toolbar">
           <button className="btn" onClick={props.onNewSession}>新对话</button>
           <button className="btn" onClick={props.onPick} disabled={props.images.length >= 3}><ImagePlus size={16} />添加图像</button>
-          <button className={props.usingDefault ? "btn active" : "btn"} onClick={props.toggleDefault}>使用第 3 步默认提示词</button>
           <ModelSelect compact value={props.settings.ImageModel} models={props.settings.ImageModels} list="image-models" onChange={(v) => props.setSettings({ ...props.settings, ImageModel: v })} />
           <select className="select compact" value={props.size} onChange={(e) => props.setSize(e.target.value)}>
             <option>auto</option>
@@ -640,13 +778,61 @@ function Nav({ active, disabled, icon, children, onClick }: { active: boolean; d
   );
 }
 
-function HistoryRow({ item, onClick }: { item: HistoryEntry; onClick: () => void }) {
+function HistoryRow({ item, active, onClick }: { item: HistoryEntry; active?: boolean; onClick: () => void }) {
+  const edit = isEditSession(item);
   return (
-    <button className="history-row" onClick={onClick}>
-      <div className="history-action">{isEditSession(item) ? `${item.Action} · ${item.Turns.length} 轮` : item.Action}</div>
-      <div className="history-meta">{item.Status} · {item.Model || "未记录模型"}</div>
+    <button className={active ? "history-row active" : "history-row"} onClick={onClick}>
+      <div className="history-row-main">
+        <span className={edit ? "history-kind edit" : "history-kind analysis"}>{edit ? <Wand2 size={13} /> : <Sparkles size={13} />}</span>
+        <div className="history-text">
+          <div className="history-action">{edit ? (item.Prompt || `图像编辑 · ${item.Turns.length} 轮`) : (item.Prompt || item.Action)}</div>
+          <div className="history-meta">{edit ? `图像编辑 · ${item.Turns.length} 轮 · ${item.Model || "未记录模型"}` : `图像分析 · ${item.Status} · ${item.Model || "未记录模型"}`}</div>
+        </div>
+      </div>
       <div className="history-date">{item.CreatedAt}</div>
     </button>
+  );
+}
+
+function AnalysisHistoryView({ item }: { item: HistoryItem }) {
+  const issueText = [item.Issues, item.Rationale ? `优化思路：${item.Rationale}` : ""].filter(Boolean).join("\n\n");
+  return (
+    <section className="workspace scrollable">
+      <Header title="图像分析" subtitle="这是最近记录里的只读分析结果，可查看原图、图像不足和生成给绘图模型的提示词。" />
+      <div className="two-column">
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <p className="eyebrow">Input</p>
+              <h2>分析图像</h2>
+            </div>
+            <span className="readonly-pill">历史记录</span>
+          </div>
+          <div className="dropzone history-dropzone">
+            {item.InputImages?.[0]?.dataUrl ? <img src={item.InputImages[0].dataUrl} className="preview-large" /> : <EmptyUpload text="此记录没有保存原图预览" />}
+          </div>
+          <div className="history-detail-grid compact">
+            <Info label="状态" value={item.Status} />
+            <Info label="模型" value={item.Model || "未记录"} />
+            <Info label="文件" value={item.FileName || "未记录"} />
+            <Info label="耗时" value={item.Duration || "未记录"} />
+            <Info label="时间" value={item.CreatedAt} wide />
+          </div>
+          <div className="meta">图像分析历史为只读记录，不会进入图像编辑会话。</div>
+        </div>
+        <div className="panel result-panel">
+          {item.Error ? (
+            <TextArea label="错误详情" value={item.Error} onChange={() => {}} readOnly />
+          ) : (
+            <>
+              <TextArea label="图像不足与优化思路" value={issueText || "未记录"} onChange={() => {}} readOnly />
+              <TextArea label="给绘图模型的编辑提示词" value={item.Prompt || "未记录"} onChange={() => {}} readOnly />
+              <TextArea label="负面提示词" value={item.NegativePrompt || "未记录"} onChange={() => {}} readOnly small />
+            </>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -711,14 +897,14 @@ function SessionImages({ session }: { session: EditSession }) {
         <div className="session-originals">
           <h3>原始图</h3>
           <div className="history-image-grid">
-            {originals.map((img, index) => <ImageBlock key={`${img.name}-${index}`} title={img.name} src={img.dataUrl} caption={img.path} />)}
+            {originals.map((img, index) => imageSrc(img) ? <ImageBlock key={`${img.name}-${index}`} title={img.name} src={imageSrc(img)} caption={img.path} /> : null)}
           </div>
         </div>
       )}
       {session.Turns.map((turn, index) => (
         <div className="session-turn" key={`${turn.path}-${index}`}>
           <div className="turn-prompt">第 {index + 1} 轮：{turn.prompt}</div>
-          <ImageBlock title="生成图" src={turn.dataUrl} caption={turn.path} />
+          {imageSrc(turn) ? <ImageBlock title="生成图" src={imageSrc(turn)} caption={turn.path} /> : <DetailBlock title="生成图" value="图片文件不存在或尚未恢复。" />}
         </div>
       ))}
     </div>

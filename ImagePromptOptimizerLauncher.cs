@@ -53,6 +53,8 @@ public sealed class MainForm : Form
         web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
         web.CoreWebView2.Settings.AreDevToolsEnabled = true;
         web.CoreWebView2.WebMessageReceived += OnMessage;
+        web.CoreWebView2.AddWebResourceRequestedFilter("https://app.local/__local_image__*", CoreWebView2WebResourceContext.Image);
+        web.CoreWebView2.WebResourceRequested += OnLocalImageRequested;
         web.CoreWebView2.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
         {
             if (!args.IsSuccess)
@@ -63,6 +65,26 @@ public sealed class MainForm : Form
         string dist = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "webview-dist");
         web.CoreWebView2.SetVirtualHostNameToFolderMapping("app.local", dist, CoreWebView2HostResourceAccessKind.Allow);
         web.CoreWebView2.Navigate("https://app.local/index.html");
+    }
+
+    private void OnLocalImageRequested(object sender, CoreWebView2WebResourceRequestedEventArgs e)
+    {
+        try
+        {
+            string query = new Uri(e.Request.Uri).Query.TrimStart('?');
+            string path = "";
+            foreach (string part in query.Split('&'))
+            {
+                string[] pieces = part.Split(new char[] { '=' }, 2);
+                if (pieces.Length == 2 && pieces[0] == "path") path = Uri.UnescapeDataString(pieces[1]);
+            }
+            if (!File.Exists(path)) throw new FileNotFoundException(path);
+            e.Response = web.CoreWebView2.Environment.CreateWebResourceResponse(File.OpenRead(path), 200, "OK", "Content-Type: " + InferMime(path));
+        }
+        catch
+        {
+            e.Response = web.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(new byte[0]), 404, "Not Found", "Content-Type: text/plain");
+        }
     }
 
     private async void OnMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -84,6 +106,7 @@ public sealed class MainForm : Form
             else if (type == "dropEdit") await DropEdit(payload);
             else if (type == "analyze") await Analyze(payload);
             else if (type == "edit") await Edit(payload);
+            else if (type == "hydrateEditSession") await HydrateEditSession(payload);
             else if (type == "clearHistory") { history.Clear(); await Send("history", new { history = history.LoadLatest(200) }); }
         }
         catch (Exception ex)
@@ -210,7 +233,7 @@ public sealed class MainForm : Form
             var response = await ApiClient.Analyze(s.ChatBaseUrl, s.ChatApiKey, s.ChatModel, analysisMime, analysisBase64);
             sw.Stop();
             AnalysisResult result = ParseAnalysis(response);
-            history.Add(new HistoryItem("分析并生成提示词", "成功", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), result.EditingPrompt, "", String.Join(Environment.NewLine, result.Issues.ToArray()), result.NegativePrompt, result.Rationale, "", "", new object[] { ImageHistoryPayload(image) }));
+            history.Add(new HistoryItem("图像分析", "成功", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), result.EditingPrompt, "", String.Join(Environment.NewLine, result.Issues.ToArray()), result.NegativePrompt, result.Rationale, "", "", new object[] { ImageHistoryPayload(image) }));
             await Send("analysisResult", new {
                 meta = "完成时间：" + Now() + " · 处理耗时：" + FormatDuration(sw.ElapsedMilliseconds),
                 issues = String.Join(Environment.NewLine, result.Issues.ToArray()) + Environment.NewLine + Environment.NewLine + "优化思路：" + result.Rationale,
@@ -223,7 +246,7 @@ public sealed class MainForm : Form
         {
             sw.Stop();
             failure = ex;
-            history.Add(new HistoryItem("分析并生成提示词", "失败", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), "", Friendly(ex), "", "", "", "", "", new object[] { ImageHistoryPayload(image) }));
+            history.Add(new HistoryItem("图像分析", "失败", s.ChatModel, S(image, "name"), FormatDuration(sw.ElapsedMilliseconds), "", Friendly(ex), "", "", "", "", "", new object[] { ImageHistoryPayload(image) }));
         }
         if (failure != null)
         {
@@ -236,6 +259,7 @@ public sealed class MainForm : Form
     {
         var s = ToSettings(payload["settings"] as Dictionary<string, object>);
         var images = ToDictList(payload["images"]);
+        HydrateImagePayloads(images);
         if (images.Count == 0) throw new Exception("请至少添加一张绘图编辑图像。");
         if (images.Count > 3) throw new Exception("最多只能添加三张图像。");
         string prompt = S(payload, "prompt");
@@ -249,13 +273,15 @@ public sealed class MainForm : Form
             string dataUrl = ExtractImageDataUrl(response);
             string savedPath = await SaveImageToLocal(dataUrl);
             sw.Stop();
-            await Send("editResult", new { prompt = prompt, dataUrl = dataUrl, path = savedPath, history = history.LoadLatest(200) });
+            object outputImage = FilePayload(savedPath);
+            history.Add(new HistoryItem("图像编辑对话", "成功", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, "", "", "", "", savedPath, dataUrl, HistoryImagePayloads(images)));
+            await Send("editResult", new { prompt = prompt, dataUrl = dataUrl, path = savedPath, outputImage = outputImage, history = history.LoadLatest(200) });
         }
         catch (Exception ex)
         {
             sw.Stop();
             failure = ex;
-
+            history.Add(new HistoryItem("图像编辑对话", "失败", s.ImageModel, S(first, "name"), FormatDuration(sw.ElapsedMilliseconds), prompt, Friendly(ex), "", "", "", "", "", HistoryImagePayloads(images)));
         }
         if (failure != null)
         {
@@ -275,11 +301,70 @@ public sealed class MainForm : Form
         foreach (var image in images) result.Add(ImageHistoryPayload(image));
         return result.ToArray();
     }
+
+    private void HydrateImagePayloads(List<Dictionary<string, object>> images)
+    {
+        foreach (var image in images)
+        {
+            if (!String.IsNullOrWhiteSpace(S(image, "base64"))) continue;
+            string path = S(image, "path");
+            if (!File.Exists(path)) continue;
+            string mime = InferMime(path);
+            image["name"] = String.IsNullOrWhiteSpace(S(image, "name")) ? Path.GetFileName(path) : S(image, "name");
+            image["mime"] = mime;
+            image["base64"] = Convert.ToBase64String(File.ReadAllBytes(path));
+            image["dataUrl"] = "data:" + mime + ";base64," + image["base64"];
+        }
+    }
+
+    private async Task HydrateEditSession(Dictionary<string, object> payload)
+    {
+        await Send("editSessionHydrated", new { sessionId = S(payload, "sessionId"), turns = HydrateTurns(ToDictList(payload["turns"])) });
+    }
+
     private object FilePayload(string path)
     {
         string mime = InferMime(path);
         string b64 = Convert.ToBase64String(File.ReadAllBytes(path));
         return new { name = Path.GetFileName(path), path = path, mime = mime, base64 = b64, dataUrl = "data:" + mime + ";base64," + b64 };
+    }
+
+    private object[] HydrateTurns(List<Dictionary<string, object>> turns)
+    {
+        var result = new List<object>();
+        foreach (var turn in turns)
+        {
+            var hydrated = new Dictionary<string, object>();
+            foreach (var pair in turn) hydrated[pair.Key] = pair.Value;
+            string path = S(turn, "path");
+            if (String.IsNullOrWhiteSpace(S(turn, "dataUrl")) && File.Exists(path)) hydrated["dataUrl"] = DataUrlFromPath(path);
+            var output = turn.ContainsKey("outputImage") ? turn["outputImage"] as Dictionary<string, object> : null;
+            if (output != null)
+            {
+                string outputPath = S(output, "path");
+                if (String.IsNullOrWhiteSpace(S(output, "dataUrl")) && File.Exists(outputPath)) hydrated["outputImage"] = FilePayload(outputPath);
+            }
+            hydrated["sourceImages"] = HydrateImages(ToDictList(turn.ContainsKey("sourceImages") ? turn["sourceImages"] : null));
+            result.Add(hydrated);
+        }
+        return result.ToArray();
+    }
+
+    private object[] HydrateImages(List<Dictionary<string, object>> images)
+    {
+        var result = new List<object>();
+        foreach (var image in images)
+        {
+            string path = S(image, "path");
+            if (String.IsNullOrWhiteSpace(S(image, "dataUrl")) && File.Exists(path)) result.Add(FilePayload(path));
+            else result.Add(image);
+        }
+        return result.ToArray();
+    }
+
+    private string DataUrlFromPath(string path)
+    {
+        return "data:" + InferMime(path) + ";base64," + Convert.ToBase64String(File.ReadAllBytes(path));
     }
 
     private string PickOneImage()
@@ -310,7 +395,11 @@ public sealed class MainForm : Form
         return settings;
     }
 
-    private async Task Send(string type, object payload) { await web.CoreWebView2.ExecuteScriptAsync("window.appReceive && window.appReceive(" + json.Serialize(new { type = type, payload = payload }) + ");"); }
+    private Task Send(string type, object payload)
+    {
+        web.CoreWebView2.PostWebMessageAsJson(json.Serialize(new { type = type, payload = payload }));
+        return Task.FromResult(0);
+    }
     private static string S(Dictionary<string, object> d, string k) { return d != null && d.ContainsKey(k) && d[k] != null ? Convert.ToString(d[k]) : ""; }
     private static string First(Dictionary<string, object> d, params string[] keys) { foreach (string key in keys) { string value = S(d, key); if (!String.IsNullOrWhiteSpace(value)) return value; } return ""; }
     private static string Now() { return DateTime.Now.ToString("yyyy/M/d HH:mm:ss"); }
@@ -494,25 +583,33 @@ public static class ApiClient
 
         ArrayList imageUrls = new ArrayList();
         ArrayList imageUrlObjects = new ArrayList();
+        ArrayList typedFlatImageUrlObjects = new ArrayList();
+        ArrayList imageUrlNestedObjects = new ArrayList();
+        ArrayList typedImageUrlObjects = new ArrayList();
         foreach (var img in images)
         {
             string mime = img.ContainsKey("mime") ? Convert.ToString(img["mime"]) : "application/octet-stream";
             string imageBase64 = Convert.ToString(img["base64"]);
+            if (String.IsNullOrWhiteSpace(imageBase64)) throw new Exception("当前图像缺少可编辑的 base64 数据，请重新添加图像。");
             string dataUrl = "data:" + mime + ";base64," + imageBase64;
             imageUrls.Add(dataUrl);
             imageUrlObjects.Add(new Dictionary<string, object> { { "image_url", dataUrl } });
+            typedFlatImageUrlObjects.Add(new Dictionary<string, object> { { "type", "image_url" }, { "image_url", dataUrl } });
+            imageUrlNestedObjects.Add(new Dictionary<string, object> { { "image_url", new Dictionary<string, object> { { "url", dataUrl } } } });
+            typedImageUrlObjects.Add(new Dictionary<string, object> { { "type", "image_url" }, { "image_url", new Dictionary<string, object> { { "url", dataUrl } } } });
         }
         var failures = new List<string>();
         var bodies = new List<Dictionary<string, object>>();
         bodies.Add(ImageEditBody(model, prompt, size, quality, "images", imageUrlObjects));
-        bodies.Add(ImageEditBody(model, prompt, size, quality, "image_url", imageUrls[0]));
-        bodies.Add(ImageEditBody(model, prompt, size, quality, "image", imageUrls.Count == 1 ? imageUrls[0] : imageUrls));
+        bodies.Add(ImageEditBody(model, prompt, size, quality, "images", typedFlatImageUrlObjects));
+        bodies.Add(ImageEditBody(model, prompt, size, quality, "images", imageUrlNestedObjects));
+        bodies.Add(ImageEditBody(model, prompt, size, quality, "images", typedImageUrlObjects));
         foreach (var body in bodies)
         {
             try { return await InvokeJson("POST", baseUrl, apiKey, "/v1/images/edits", body, 300); }
             catch (Exception json) { failures.Add(json.Message); }
         }
-        throw new Exception("Multipart failed: " + multipartError.Message + Environment.NewLine + "JSON failed: " + String.Join(Environment.NewLine + "---" + Environment.NewLine, failures.ToArray()));
+        throw new Exception("图像编辑请求失败。Multipart: " + ShortError(multipartError.Message) + Environment.NewLine + "JSON: " + ShortError(failures.Count > 0 ? failures[0] : "无返回"));
     }
 
     private static Dictionary<string, object> ImageEditBody(string model, string prompt, string size, string quality, string imageKey, object imageValue)
@@ -525,6 +622,11 @@ public static class ApiClient
             { "quality", quality },
             { "response_format", "b64_json" }
         };
+    }
+    private static string ShortError(string value)
+    {
+        string v = String.IsNullOrWhiteSpace(value) ? "未知错误" : value.Replace("\r", " ").Replace("\n", " ");
+        return v.Length > 500 ? v.Substring(0, 500) + "..." : v;
     }
     public static async Task<Dictionary<string, object>> InvokeJson(string method, string baseUrl, string apiKey, string path, object body, int timeoutSeconds)
     {
@@ -608,8 +710,35 @@ public sealed class HistoryStore
         if (!File.Exists(FilePath)) return new List<HistoryItem>();
         string[] lines = File.ReadAllLines(FilePath, Encoding.UTF8);
         var result = new List<HistoryItem>();
-        for (int i = lines.Length - 1; i >= 0 && result.Count < count; i--) { try { result.Add(Json.Deserialize<HistoryItem>(lines[i])); } catch { } }
+        for (int i = lines.Length - 1; i >= 0 && result.Count < count; i--) { try { result.Add(Slim(Json.Deserialize<HistoryItem>(lines[i]))); } catch { } }
         return result;
+    }
+    private HistoryItem Slim(HistoryItem item)
+    {
+        if (item == null) return item;
+        item.OutputDataUrl = "";
+        bool edit = IsEditHistory(item);
+        if (item.InputImages == null) return item;
+        for (int i = 0; i < item.InputImages.Length; i++)
+        {
+            var image = item.InputImages[i] as Dictionary<string, object>;
+            if (image == null) continue;
+            if (edit)
+            {
+                string path = image.ContainsKey("path") ? Convert.ToString(image["path"]) : "";
+                if (!String.IsNullOrWhiteSpace(path))
+                {
+                    image["dataUrl"] = "";
+                    image["base64"] = "";
+                }
+            }
+        }
+        return item;
+    }
+    private static bool IsEditHistory(HistoryItem item)
+    {
+        string action = item.Action ?? "";
+        return action.Contains("图像编辑") || action.Contains("绘图模型编辑") || action == "调用绘图模型编辑";
     }
     public void Clear() { if (File.Exists(FilePath)) File.Delete(FilePath); }
 }
